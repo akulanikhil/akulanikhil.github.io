@@ -27,18 +27,25 @@ import itertools
 from collections import defaultdict, deque
 import random
 import base64
-import streamlit.components.v1 as components
+
+# Try to import components.html, but fall back to st.markdown if unavailable (some stlite builds)
+try:
+    import streamlit.components.v1 as components
+    _HAS_COMPONENTS = True
+except Exception:
+    _HAS_COMPONENTS = False
 
 st.set_page_config(page_title="Pickleball Rotations", page_icon="🎾", layout="centered")
 
 # ----------------------------
-# Copy-to-clipboard button (themed + UTF-8 safe)
+# Copy-to-clipboard button (themed + UTF-8 safe) — stlite-safe
 # ----------------------------
 
 def _b64(s: str) -> str:
     return base64.b64encode(s.encode("utf-8")).decode("ascii")
 
 def _lighten(hex_color: str, factor: float = 0.35) -> str:
+    """Lighten a hex color by mixing with white (factor in [0..1])."""
     h = hex_color.lstrip("#")
     r, g, b = (int(h[i:i+2], 16) for i in (0, 2, 4))
     r = int(r + (255 - r) * factor)
@@ -51,7 +58,11 @@ def copy_full_button(text: str, key: str = "copy_full", label: str = "📋 Copy 
     primary = (st.get_option("theme.primaryColor") or "#4F8BF9").strip()
     lighter = _lighten(primary, 0.35)
 
-    html = f'''
+    # Build <script> … </script> without ever writing the literal "</script>" in source
+    script_open = "<scr" + "ipt>"
+    script_close = "</scr" + "ipt>"
+
+    html = f"""
 <style>
   .copywrap {{
     margin-top: 12px;
@@ -85,7 +96,7 @@ def copy_full_button(text: str, key: str = "copy_full", label: str = "📋 Copy 
   <div id="{key}-msg"></div>
 </div>
 
-<script>
+{script_open}
 (function() {{
   const btn = document.getElementById("{key}");
   const msg = document.getElementById("{key}-msg");
@@ -97,13 +108,14 @@ def copy_full_button(text: str, key: str = "copy_full", label: str = "📋 Copy 
     try {{
       return new TextDecoder("utf-8").decode(bytes);
     }} catch (e) {{
+      // Fallback for older browsers
       return decodeURIComponent(escape(bin));
     }}
   }}
 
   const txt = utf8FromBase64(b64);
 
-  btn.addEventListener("click", async () => {{
+  btn?.addEventListener("click", async () => {{
     try {{
       await navigator.clipboard.writeText(txt);
       msg.textContent = "✅ Copied!";
@@ -116,9 +128,13 @@ def copy_full_button(text: str, key: str = "copy_full", label: str = "📋 Copy 
     }}
   }});
 }})();
-</script>
-'''
-    components.html(html, height=110)
+{script_close}
+"""
+    if _HAS_COMPONENTS:
+        components.html(html, height=110)
+    else:
+        # Fallback path for stlite variants without components.html
+        st.markdown(html, unsafe_allow_html=True)
 
 # ----------------------------
 # Rotation logic
