@@ -1,284 +1,114 @@
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="UTF-8" />
-    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, shrink-to-fit=no"
-    />
-    <title>Stlite app</title>
-    <link
-      rel="stylesheet"
-      href="https://cdn.jsdelivr.net/npm/@stlite/browser@0.89.1/build/stlite.css"
-    />
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module">
-import { mount } from "https://cdn.jsdelivr.net/npm/@stlite/browser@0.89.1/build/stlite.js"
-mount(
-  {
-    requirements: [],
-    entrypoint: "streamlit_app.py",
-    files: {
-"streamlit_app.py": `import streamlit as st
-import itertools
-from collections import defaultdict, deque
-import random
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pickleball Rotations</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="container">
+    <h1>🎾 Pickleball Player Rotation Generator</h1>
+    <p class="subtle">
+      made by nikhil
+    </p>
+  </header>
 
-st.set_page_config(page_title="Pickleball Rotations", page_icon="🎾", layout="centered")
+  <main class="container grid">
+    <section class="card">
+      <h2>Inputs</h2>
 
-# ----------------------------
-# Scheduling core
-# ----------------------------
+      <label class="label" for="players">Players (one per line or comma-separated)</label>
+      <textarea id="players" rows="8" placeholder="Appi, Basha, Chris, Daryl&#10;Satish&#10;Srini"></textarea>
 
-def schedule_rotations(players, num_courts, num_rounds, seed=None):
-    """
-    Build rounds of doubles matches for multiple courts, minimizing repeat teammates and
-    balancing play time. Works with odd counts by rotating benches fairly.
+      <div class="row">
+        <div>
+          <label class="label" for="courts">Courts</label>
+          <input id="courts" type="number" min="1" max="10" value="2" />
+        </div>
+        <div>
+          <label class="label" for="rounds">Rounds</label>
+          <input id="rounds" type="number" min="1" max="50" value="8" />
+        </div>
+        <div>
+          <label class="label" for="seed">Seed</label>
+          <div style="display:flex; gap:8px;">
+            <input id="seed" type="text" placeholder="auto-generated" />
+            <button id="newSeed" class="secondary">🔀</button>
+          </div>
+        </div>
+      </div>
 
-    Returns:
-        rounds: list of rounds; each round is list of matches; each match is ((p1,p2),(p3,p4))
-        benches: list of benched players per round (could be empty list)
-        stats: dict of counts (teammates/opponents/plays/benches) for diagnostics
-    """
-    if seed is not None:
-        random.seed(seed)
+      <details class="details">
+        <summary>Tuning (optional)</summary>
+        <div class="row">
+          <div>
+            <label class="label" for="wT">wT (teammate repeats)</label>
+            <input id="wT" type="number" min="0" max="20" step="0.5" value="5" />
+          </div>
+          <div>
+            <label class="label" for="wO">wO (opponent repeats)</label>
+            <input id="wO" type="number" min="0" max="20" step="0.5" value="2" />
+          </div>
+          <div>
+            <label class="label" for="wP">wP (play balance)</label>
+            <input id="wP" type="number" min="0" max="10" step="0.25" value="1" />
+          </div>
+        </div>
 
-    players = [p.strip() for p in players if p.strip()]
-    n = len(players)
-    if n < 4:
-        raise ValueError("Need at least 4 players.")
+        <div class="row">
+          <div>
+            <label class="label" for="beamWidth">Beam width</label>
+            <input id="beamWidth" type="number" min="10" max="500" step="10" value="80" />
+          </div>
+          <div>
+            <label class="label" for="partnerK">Partner shortlist K</label>
+            <input id="partnerK" type="number" min="4" max="30" step="1" value="10" />
+          </div>
+          <div class="checkbox">
+            <input id="squareRepeats" type="checkbox" checked />
+            <label for="squareRepeats">Square repeat penalties</label>
+          </div>
+        </div>
 
-    per_round_capacity = 4 * num_courts
-    random.shuffle(players)
-    play_queue = deque(players)
+        <div class="row">
+          <div class="checkbox">
+            <input id="avoidB2B" type="checkbox" checked />
+            <label for="avoidB2B">Avoid back-to-back bench</label>
+          </div>
+        </div>
+      </details>
 
-    teammate_count = defaultdict(int)      # key: frozenset({a,b})
-    opponent_count = defaultdict(int)      # key: frozenset({a,b})
-    plays_count = defaultdict(int)         # key: player
-    bench_count = defaultdict(int)         # key: player
+      <div class="actions">
+        <button id="generate">Generate</button>
+        <button id="copy" class="secondary" disabled>Copy schedule</button>
+        <button id="copyLink" class="secondary" disabled>Copy link</button>
+      </div>
 
-    rounds = []
-    benches = []
+      <p id="warning" class="warning" hidden></p>
+      <p id="error" class="error" hidden></p>
+    </section>
 
-    for _ in range(num_rounds):
-        # Choose who is eligible this round (fill capacity; others initially "eligible bench")
-        round_players = []
-        while len(round_players) < min(per_round_capacity, n) and len(round_players) < n:
-            p = play_queue.popleft()
-            round_players.append(p)
-            play_queue.append(p)
+    <section class="card">
+      <div class="headerRow">
+        <h2>Schedule</h2>
+        <span id="meta" class="subtle"></span>
+      </div>
+      <div id="schedule" class="schedule"></div>
+    </section>
 
-        # Target number of matches we can actually run this round
-        target_matches = min(num_courts, len(round_players) // 4) if len(round_players) >= 4 else 0
+    <section class="card">
+      <h2>Diagnostics</h2>
+      <div id="diagnostics" class="diagnostics subtle">
+        <p>Generate a schedule to see stats.</p>
+      </div>
+    </section>
+  </main>
 
-        # Build candidate pairs from round players
-        candidate_pairs = list(itertools.combinations(round_players, 2))
+  <footer class="container subtle footer">
+    <p>:)</p>
+  </footer>
 
-        used_this_round = set()
-        chosen_pairs = []
-
-        def pair_score(a, b):
-            # lower is better
-            t = teammate_count[frozenset((a, b))]
-            bal = (plays_count[a] + plays_count[b]) / 2.0
-            return (t, bal)
-
-        # Pick just enough pairs to form target_matches (2 pairs per match)
-        for _ in range(2 * target_matches):
-            viable = [(pair_score(a, b), (a, b)) for (a, b) in candidate_pairs
-                      if a not in used_this_round and b not in used_this_round]
-            if not viable:
-                break
-            viable.sort(key=lambda x: x[0])
-            _, (a, b) = viable[0]
-            chosen_pairs.append((a, b))
-            used_this_round.update([a, b])
-
-        # Turn pairs into matches, minimizing opponent repeats
-        matches = []
-        pairs_pool = set(tuple(sorted(p)) for p in chosen_pairs)
-
-        def match_score(pair1, pair2):
-            a, b = pair1
-            c, d = pair2
-            return (opponent_count[frozenset((a, c))] + opponent_count[frozenset((a, d))] +
-                    opponent_count[frozenset((b, c))] + opponent_count[frozenset((b, d))])
-
-        while len(pairs_pool) >= 2 and len(matches) < target_matches:
-            pool_list = list(pairs_pool)
-            pool_list.sort(key=lambda p: (teammate_count[frozenset(p)],
-                                          (plays_count[p[0]] + plays_count[p[1]]) / 2.0))
-            p1 = pool_list[0]
-
-            best = None
-            best_score = None
-            for p2 in pool_list[1:]:
-                if not (set(p1) & set(p2)):
-                    s = match_score(p1, p2)
-                    if best is None or s < best_score:
-                        best = p2
-                        best_score = s
-
-            if best is None:
-                pairs_pool.remove(p1)
-                continue
-
-            matches.append((p1, best))
-            pairs_pool.remove(p1)
-            pairs_pool.remove(best)
-
-        # Update counts for plays/teammates/opponents
-        active_players = set()
-        for ((a, b), (c, d)) in matches:
-            teammate_count[frozenset((a, b))] += 1
-            teammate_count[frozenset((c, d))] += 1
-
-            for x in (a, b, c, d):
-                plays_count[x] += 1
-                active_players.add(x)
-
-            for x in (a, b):
-                for y in (c, d):
-                    opponent_count[frozenset((x, y))] += 1
-
-        # Players who did NOT play in a match this round are benched (regardless of eligibility selection)
-        benched = [p for p in players if p not in active_players]
-        benches.append(benched)
-        for b in benched:
-            bench_count[b] += 1
-
-        # Fairness tweak: bring benched players to the front of the queue for next round
-        if benched:
-            current = list(play_queue)
-            benched_set = set(benched)
-            new_order = [p for p in current if p in benched_set] + [p for p in current if p not in benched_set]
-            play_queue = deque(new_order)
-
-        rounds.append(matches)
-
-    stats = {
-        "teammates": dict(teammate_count),
-        "opponents": dict(opponent_count),
-        "plays": dict(plays_count),
-        "benches": dict(bench_count),
-    }
-    return rounds, benches, stats
-
-
-def format_round(round_matches):
-    lines = []
-    for (team1, team2) in round_matches:
-        (a, b) = team1
-        (c, d) = team2
-        lines.append(f"{a} & {b} vs {c} & {d}")
-    return lines
-
-
-# ----------------------------
-# Streamlit UI
-# ----------------------------
-
-st.title("🎾 Pickleball Player Rotation Generator")
-
-with st.expander("How it works"):
-    st.write(
-        """
-        - Works for **any number of players ≥ 4** and **any number of courts**.
-        - If players aren’t a multiple of 4×courts, the app **fairly rotates benches** each round.
-        - Each round is built with a heuristic to **minimize repeat teammates** and also reduce repeat opponents.
-        - You can set a random seed for reproducibility, or leave it blank for fresh schedules.
-        """
-    )
-
-player_input = st.text_area(
-    "Enter player names (one per line or comma-separated):",
-    placeholder="Alice, Bob, Charlie, Dana, Evan, Fiona, ...",
-    height=150,
-)
-
-col1, col2, col3 = st.columns(3)
-with col1:
-    num_courts = st.number_input("Number of courts", min_value=1, max_value=10, value=2, step=1)
-with col2:
-    num_rounds = st.number_input("Number of rounds", min_value=1, max_value=50, value=8, step=1)
-with col3:
-    seed_text = st.text_input("Random seed (optional)", value="")
-
-if st.button("Generate Rotations"):
-    if not player_input.strip():
-        st.error("Please enter at least 4 player names.")
-    else:
-        raw = [p.strip() for chunk in player_input.splitlines() for p in chunk.split(",")]
-        players = [p for p in raw if p]
-
-        if len(players) < 4:
-            st.error("Please enter at least 4 players.")
-        else:
-            max_matches_possible = len(players) // 4
-            if num_courts > max_matches_possible and max_matches_possible > 0:
-                st.warning(
-                    f"You have {len(players)} players; at most {max_matches_possible} match(es) "
-                    f"can run simultaneously. I’ll schedule up to that many courts per round."
-                )
-
-            seed = None
-            if seed_text.strip():
-                try:
-                    seed = int(seed_text.strip())
-                except ValueError:
-                    seed = abs(hash(seed_text.strip())) % (2**32)
-
-            rounds, benches, stats = schedule_rotations(players, num_courts, num_rounds, seed=seed)
-
-            st.subheader("Schedule")
-            for i, (matches, benched) in enumerate(zip(rounds, benches), start=1):
-                st.markdown(f"**Round {i}**")
-                if not matches:
-                    st.write("_No full matches possible this round with the current settings._")
-                for line in format_round(matches):
-                    st.write(line)
-                if benched:
-                    st.caption("Benched: " + ", ".join(benched))
-                st.markdown("---")
-
-            with st.expander("Diagnostics (teammates, opponents, plays, benches)"):
-                tm = sorted(((tuple(sorted(k)), v) for k, v in stats["teammates"].items() if v > 0),
-                            key=lambda x: (-x[1], x[0]))
-                if tm:
-                    st.write("Top teammate repeats:")
-                    st.write(", ".join([f"{a}&{b}:{v}" for (a, b), v in tm[:20]]))
-
-                op = sorted(((tuple(sorted(k)), v) for k, v in stats["opponents"].items() if v > 0),
-                            key=lambda x: (-x[1], x[0]))
-                if op:
-                    st.write("Top opponent repeats:")
-                    st.write(", ".join([f"{a}vs{b}:{v}" for (a, b), v in op[:20]]))
-
-                if stats["plays"]:
-                    st.write("Plays per player:")
-                    st.write(", ".join([f"{p}:{stats['plays'][p]}" for p in sorted(stats["plays"].keys())]))
-
-                if stats["benches"]:
-                    st.write("Bench counts per player:")
-                    st.write(", ".join([f"{p}:{stats['benches'][p]}" for p in sorted(stats["benches"].keys())]))
-
-                # Fairness check (plays + benches should equal number of rounds for everyone)
-                all_names = sorted(set(list(stats["plays"].keys()) + list(stats["benches"].keys())))
-                fairness = [f"{p}: plays={stats['plays'].get(p,0)}, benches={stats['benches'].get(p,0)}, total={stats['plays'].get(p,0)+stats['benches'].get(p,0)}"
-                            for p in all_names]
-                st.write("Fairness check (plays + benches by player):")
-                st.write(", ".join(fairness))`,
-
-},
-  },
-  document.getElementById("root")
-)
-
-function Uu(n){const a=window.atob(n),i=a.length,l=new Uint8Array(i);for(let u=0;u<i;u++)l[u]=a.charCodeAt(u);return l}
-    </script>
-  </body>
-  <!-- Generated from Stlite Sharing (https://edit.share.stlite.net/), and the source version is fb463ba482ecec37a31a01fa95898563625f577b -->
+  <script type="module" src="./app.js"></script>
+</body>
 </html>
