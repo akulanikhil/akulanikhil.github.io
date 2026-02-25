@@ -132,7 +132,39 @@ function bestSplitForFour(p4, teammateCount, opponentCount, playsCount, wT, wO, 
 // ----------------------------
 // Fair bench selection
 // ----------------------------
-function pickActiveSet(allPlayers, perRoundCapacity, playsCount, benchCount, lastBenchedSet, avoidB2B, rng) {
+function pickBenchesByQueue(players, benchesNeeded, benchQueue, lastBenchedSet) {
+  if (benchesNeeded <= 0) return [];
+
+  const benched = [];
+  const inQueue = new Set(benchQueue);
+
+  // Ensure queue contains all players (in case of edits)
+  for (const p of players) {
+    if (!inQueue.has(p)) benchQueue.push(p);
+  }
+
+  // We’ll iterate through the queue and pick benchesNeeded players,
+  // skipping someone who was benched last round if benchesNeeded is small.
+  let guard = 0;
+  while (benched.length < benchesNeeded && guard < benchQueue.length * 3) {
+    guard++;
+
+    const p = benchQueue.shift(); // pop from front
+
+    // avoid back-to-back bench when possible
+    if (lastBenchedSet.has(p) && benchQueue.length > 0 && benchesNeeded === 1) {
+      benchQueue.push(p); // put back at end
+      continue;
+    }
+
+    benched.push(p);
+    benchQueue.push(p); // rotate to end once chosen
+  }
+
+  return benched;
+}
+
+function pickActiveSet(allPlayers, perRoundCapacity, playsCount, benchCount, lastBenchedSet, lastBenchedRound, avoidB2B, rng) {
   const cap = Math.min(perRoundCapacity, allPlayers.length);
   if (cap <= 0) return { activePool: [], initiallyBenched: [...allPlayers] };
 
@@ -143,8 +175,14 @@ function pickActiveSet(allPlayers, perRoundCapacity, playsCount, benchCount, las
     const plays = playsCount.get(p) ?? 0;
     const bench = benchCount.get(p) ?? 0;
     const b2bBonus = (avoidB2B && lastBenchedSet.has(p)) ? -1 : 0; // prefer them to play
-    // IMPORTANT: no name in tie-break
-    return [plays, bench, b2bBonus];
+
+    // Recency: larger = benched more recently; we want those people to be MORE likely active
+    const last = lastBenchedRound.get(p);
+    const recency = (last == null) ? -1e9 : last;
+
+    // Lower sort key = more likely ACTIVE.
+    // So we use -recency: recently-benched => more negative => earlier => more likely to play.
+    return [plays, bench, b2bBonus, -recency];
   }
 
   ordered.sort((x, y) => {
@@ -324,6 +362,7 @@ function scheduleRotations(players, numCourts, numRounds, seedText, options) {
   if (players.length < 4) throw new Error("Need at least 4 players.");
 
   shuffleInPlace(players, rng);
+  const benchQueue = [...players]; // already shuffled by rng; serves as rotation order
 
   const teammateCount = new Map();
   const opponentCount = new Map();
@@ -333,51 +372,21 @@ function scheduleRotations(players, numCourts, numRounds, seedText, options) {
   const rounds = [];
   const benches = [];
   let lastBenched = new Set();
+  const lastBenchedRound = new Map(); // player -> round index last benched
 
   const perRoundCapacity = 4 * numCourts;
 
   for (let r = 0; r < numRounds; r++) {
-    const { activePool, initiallyBenched } = pickActiveSet(
-      players,
-      perRoundCapacity,
-      playsCount,
-      benchCount,
-      lastBenched,
-      options.avoidB2B,
-      rng
-    );
-
-    const targetMatches = Math.min(numCourts, Math.floor(activePool.length / 4));
+    // How many matches can run this round based on courts + total players
+    const targetMatches = Math.min(numCourts, Math.floor(players.length / 4));
     const need = 4 * targetMatches;
+    const benchesNeeded = players.length - need;
 
-    let playing = [];
-    let extraFromActive = [];
+    // Pick benches in a stable rotation order (no back-to-back when possible)
+    let benched = pickBenchesByQueue(players, benchesNeeded, benchQueue, lastBenched);
 
-    if (need > 0) {
-      // Shuffle first so ties rotate fairly
-        const sortedActive = shuffled([...activePool], rng);
-
-        sortedActive.sort((a, b) => {
-          const pa = playsCount.get(a) ?? 0;
-          const pb = playsCount.get(b) ?? 0;
-          const ba = benchCount.get(a) ?? 0;
-          const bb = benchCount.get(b) ?? 0;
-          const aBoost = (options.avoidB2B && lastBenched.has(a)) ? -1 : 0;
-          const bBoost = (options.avoidB2B && lastBenched.has(b)) ? -1 : 0;
-
-          if (pa !== pb) return pa - pb;
-          if (ba !== bb) return ba - bb;
-          if (aBoost !== bBoost) return aBoost - bBoost;
-          return 0; // ties keep shuffled order
-        });
-
-      playing = sortedActive.slice(0, need);
-      extraFromActive = sortedActive.slice(need);
-    } else {
-      extraFromActive = [...activePool];
-    }
-
-    let benched = [...initiallyBenched, ...extraFromActive];
+    // Everyone else plays
+    let playing = players.filter(p => !new Set(benched).has(p));
 
     const matches = beamSearchRound(
       playing,
@@ -424,10 +433,13 @@ function scheduleRotations(players, numCourts, numRounds, seedText, options) {
     }
 
     // unique + stable
-    benched = [...new Set(benched)].sort((a, b) => a < b ? -1 : 1);
+    benched = [...new Set(benched)];
 
     benches.push(benched);
-    for (const b of benched) benchCount.set(b, (benchCount.get(b) ?? 0) + 1);
+    for (const b of benched) {
+      benchCount.set(b, (benchCount.get(b) ?? 0) + 1);
+      lastBenchedRound.set(b, r); // <-- ADD THIS
+    }
 
     lastBenched = new Set(benched);
     rounds.push(matches);
@@ -467,26 +479,12 @@ const elWarning = document.getElementById("warning");
 const elError = document.getElementById("error");
 const elMeta = document.getElementById("meta");
 
-function buildShareUrl(players, numCourts, numRounds, seedText, options) {
+function buildShareUrlCompact(configObj) {
+  // LZString is global from CDN
+  const packed = LZString.compressToEncodedURIComponent(JSON.stringify(configObj));
   const url = new URL(window.location.href);
-  url.searchParams.set("players", encodePlayers(players));
-  url.searchParams.set("courts", String(numCourts));
-  url.searchParams.set("rounds", String(numRounds));
-  if (seedText) url.searchParams.set("seed", seedText);
-  else url.searchParams.delete("seed");
-
-  // tuning
-  url.searchParams.set("wT", String(options.wT));
-  url.searchParams.set("wO", String(options.wO));
-  url.searchParams.set("wP", String(options.wP));
-  url.searchParams.set("beamWidth", String(options.beamWidth));
-  url.searchParams.set("partnerK", String(options.partnerK));
-  url.searchParams.set("square", options.squareRepeats ? "1" : "0");
-  url.searchParams.set("avoidB2B", options.avoidB2B ? "1" : "0");
-
-  // auto-generate on open
-  url.searchParams.set("auto", "1");
-
+  url.search = "";                 // keep it clean
+  url.hash = `s=${packed}`;        // store in hash
   return url.toString();
 }
 
@@ -698,59 +696,63 @@ btnCopy.addEventListener("click", async () => {
 });
 
 btnCopyLink.addEventListener("click", async () => {
-  // Read current inputs (not just last result) so it works even after edits
   const players = parsePlayers(elPlayers.value);
-  const numCourts = Math.max(1, parseInt(elCourts.value || "1", 10));
-  const numRounds = Math.max(1, parseInt(elRounds.value || "1", 10));
-  const seedText = (elSeed.value || "").trim();
+  let seedText = (elSeed.value || "").trim();
+  if (!seedText) { seedText = generateSeed(); elSeed.value = seedText; }
 
-  const options = {
+  const cfg = {
+    players,
+    courts: parseInt(elCourts.value || "1", 10),
+    rounds: parseInt(elRounds.value || "1", 10),
+    seed: seedText,
     wT: parseFloat(elwT.value || "5"),
     wO: parseFloat(elwO.value || "2"),
     wP: parseFloat(elwP.value || "1"),
     beamWidth: parseInt(elBeamWidth.value || "80", 10),
     partnerK: parseInt(elPartnerK.value || "10", 10),
-    squareRepeats: !!elSquare.checked,
+    square: !!elSquare.checked,
     avoidB2B: !!elAvoidB2B.checked,
+    auto: 1
   };
 
-  const url = buildShareUrl(players, numCourts, numRounds, seedText, options);
+  const url = buildShareUrlCompact(cfg);
   const ok = await copyTextToClipboard(url);
-
-  if (ok) {
-    btnCopyLink.textContent = "Link copied!";
-    setTimeout(() => (btnCopyLink.textContent = "Copy link"), 900);
-  }
+  if (ok) { btnCopyLink.textContent = "Link copied!"; setTimeout(() => btnCopyLink.textContent = "Copy link", 900); }
 });
 
-function applyParamsFromUrl() {
-  const params = new URLSearchParams(window.location.search);
-  if (!params.size) return;
+function applyParamsFromUrlCompact() {
+  const hash = (window.location.hash || "").replace(/^#/, "");
+  const params = new URLSearchParams(hash);
+  const packed = params.get("s");
+  if (!packed) return false;
 
-  if (params.has("players")) {
-    const plist = decodePlayers(params.get("players") || "");
-    elPlayers.value = plist.join("\n");
-  }
-  if (params.has("courts")) elCourts.value = params.get("courts");
-  if (params.has("rounds")) elRounds.value = params.get("rounds");
-  if (params.has("seed")) elSeed.value = params.get("seed");
+  try {
+    const json = LZString.decompressFromEncodedURIComponent(packed);
+    if (!json) return false;
+    const cfg = JSON.parse(json);
 
-  if (params.has("wT")) elwT.value = params.get("wT");
-  if (params.has("wO")) elwO.value = params.get("wO");
-  if (params.has("wP")) elwP.value = params.get("wP");
-  if (params.has("beamWidth")) elBeamWidth.value = params.get("beamWidth");
-  if (params.has("partnerK")) elPartnerK.value = params.get("partnerK");
+    // apply to UI (adapt to your field names)
+    if (cfg.players) elPlayers.value = cfg.players.join("\n");
+    if (cfg.courts) elCourts.value = cfg.courts;
+    if (cfg.rounds) elRounds.value = cfg.rounds;
+    if (cfg.seed) elSeed.value = cfg.seed;
 
-  if (params.has("square")) elSquare.checked = params.get("square") === "1";
-  if (params.has("avoidB2B")) elAvoidB2B.checked = params.get("avoidB2B") === "1";
+    if (cfg.wT != null) elwT.value = cfg.wT;
+    if (cfg.wO != null) elwO.value = cfg.wO;
+    if (cfg.wP != null) elwP.value = cfg.wP;
+    if (cfg.beamWidth != null) elBeamWidth.value = cfg.beamWidth;
+    if (cfg.partnerK != null) elPartnerK.value = cfg.partnerK;
+    if (cfg.square != null) elSquare.checked = !!cfg.square;
+    if (cfg.avoidB2B != null) elAvoidB2B.checked = !!cfg.avoidB2B;
 
-  // Auto-generate if requested
-  if (params.get("auto") === "1") {
-    btnGenerate.click();
+    if (cfg.auto) btnGenerate.click();
+    return true;
+  } catch {
+    return false;
   }
 }
 
-applyParamsFromUrl();
+applyParamsFromUrlCompact();
 if (!elSeed.value) {
   elSeed.value = generateSeed();
 }
